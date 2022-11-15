@@ -1,13 +1,17 @@
 #include "game.h"
-#include <iostream>
 #include "SDL.h"
+#include <algorithm>
+#include <future>
+#include <iostream>
+#include <random>
 
-Game::Game(std::size_t grid_width, std::size_t grid_height)
-    : snake(grid_width, grid_height),
-      engine(dev()),
-      random_w(0, static_cast<int>(grid_width - 1)),
-      random_h(0, static_cast<int>(grid_height - 1)) {
-  PlaceFood();
+// Initialize the game with empty field and a starting piece
+Game::Game(std::size_t gridWidth, std::size_t gridHeight)
+    : _gridWidth(gridWidth), _gridHeight(gridHeight) {
+  _field = std::make_shared<Field>(_gridWidth, _gridHeight);
+  generator = PieceGenerator();
+  _piece = generator.GeneratePiece(_gridWidth, _gridHeight, _baseDescendSpeed,
+                                   _field);
 }
 
 void Game::Run(Controller const &controller, Renderer &renderer,
@@ -17,15 +21,39 @@ void Game::Run(Controller const &controller, Renderer &renderer,
   Uint32 frame_end;
   Uint32 frame_duration;
   int frame_count = 0;
+  int rowCleared = 0;
   bool running = true;
+  bool alive = true; // whether the current piece is alive or not
 
+  SimulatePiece(); // simulates the starting piece
+
+  // Input, Update, Render - the main game loop.
   while (running) {
     frame_start = SDL_GetTicks();
-
-    // Input, Update, Render - the main game loop.
-    controller.HandleInput(running, snake);
-    Update();
-    renderer.Render(snake, food);
+    // keeps generating new pieces and simulating its descent with a child
+    // thread, repeately checking the status of the future, the promis would
+    // return when the piece reaches the field in the child thread
+    if (alive and _future.wait_for(std::chrono::milliseconds(0)) ==
+                      std::future_status::ready) {
+      // updates score when a new piece is generated, and uses the score to
+      // determine next piece's speed
+      UpdateScore();
+      _piece = generator.GeneratePiece(_gridWidth, _gridHeight,
+                                       ComputePieceDescendSpeed(), _field);
+      // game ends if the new piece cannot be placed
+      if (_piece->IsPlaceble()) {
+        std::cout << _piece->GetName() << " cannot be created. Game Over."
+                  << std::endl;
+        alive = false;
+      } else {
+        // otherwise, simulates the new piece's descent
+        SimulatePiece();
+      }
+    }
+    controller.HandleInput(running, *_piece);
+    std::unique_lock<std::mutex> lck(_mutex);
+    renderer.Render(*_piece, *_field);
+    lck.unlock();
 
     frame_end = SDL_GetTicks();
 
@@ -36,7 +64,7 @@ void Game::Run(Controller const &controller, Renderer &renderer,
 
     // After every second, update the window title.
     if (frame_end - title_timestamp >= 1000) {
-      renderer.UpdateWindowTitle(score, frame_count);
+      renderer.UpdateWindowTitle(_score, _level, frame_count);
       frame_count = 0;
       title_timestamp = frame_end;
     }
@@ -50,38 +78,25 @@ void Game::Run(Controller const &controller, Renderer &renderer,
   }
 }
 
-void Game::PlaceFood() {
-  int x, y;
-  while (true) {
-    x = random_w(engine);
-    y = random_h(engine);
-    // Check that the location is not occupied by a snake item before placing
-    // food.
-    if (!snake.SnakeCell(x, y)) {
-      food.x = x;
-      food.y = y;
-      return;
-    }
-  }
+// Simulates the piece's descent in the child thread. Uses promise and future
+// communiate between child thread and the main thread.
+void Game::SimulatePiece() {
+  std::promise<void> prms = std::promise<void>();
+  _future = prms.get_future();
+  _piece->Simulate(std::move(prms));
 }
 
-void Game::Update() {
-  if (!snake.alive) return;
+// Adds the square of the additional rows cleared to the total score, and
+// updates current level
+void Game::UpdateScore() {
+  int cleared = _field->GetRowsCleared() - _rowsCleared;
+  _rowsCleared = _field->GetRowsCleared();
+  _score += cleared * cleared;
+  _level = std::min(_maxLevel, 1 + static_cast<int>(_score / _scorePerLevel));
+};
 
-  snake.Update();
+// Increases descending speed linearly at each level until reaching max level.
+float Game::ComputePieceDescendSpeed() { return _baseDescendSpeed * _level; }
 
-  int new_x = static_cast<int>(snake.head_x);
-  int new_y = static_cast<int>(snake.head_y);
-
-  // Check if there's food over here
-  if (food.x == new_x && food.y == new_y) {
-    score++;
-    PlaceFood();
-    // Grow snake and increase speed.
-    snake.GrowBody();
-    snake.speed += 0.02;
-  }
-}
-
-int Game::GetScore() const { return score; }
-int Game::GetSize() const { return snake.size; }
+int Game::GetScore() const { return _score; }
+int Game::GetLevel() const { return _level; }
