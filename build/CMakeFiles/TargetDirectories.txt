@@ -1,3 +1,0 @@
-/home/tommy/projects/CppND-Capstone-Tetris/build/CMakeFiles/rebuild_cache.dir
-/home/tommy/projects/CppND-Capstone-Tetris/build/CMakeFiles/edit_cache.dir
-/home/tommy/projects/CppND-Capstone-Tetris/build/CMakeFiles/Tetris.dir
